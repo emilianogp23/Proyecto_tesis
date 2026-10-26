@@ -1,0 +1,9 @@
+/**:
+  ros__parameters:
+    # Solo corrección de odometría: las ganancias y la trayectoria
+    # vienen de real_drone.yaml (antes este archivo metía kp_xy=0.8,
+    # kd_xy=0.3, etc. sin haberse probado).
+    scale_x: 0.8071796061782703
+    scale_y: 0.8071796061782703
+    trim_x: 0.0
+    trim_y: 0.0

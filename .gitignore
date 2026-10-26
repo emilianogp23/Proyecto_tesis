@@ -1,0 +1,15 @@
+# Workspace de colcon (si se compila dentro del repositorio)
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Respaldos comprimidos
+*.zip
+
+# Editores
+.vscode/
