@@ -1,0 +1,9 @@
+# Datos generados por control_bebop (se guardan localmente, no se suben)
+control_bebop/bags/
+control_bebop/videos/
+control_bebop/reconstrucciones/
+control_bebop/trayectorias/
+control_bebop/.pytest_cache/
+
+# Videos de respaldo: pesan ~50 MB cada uno; quedan en Vuelo_bebop_v1
+control_bebop/Bags_respaldo/videos_respaldo/

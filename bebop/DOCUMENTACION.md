@@ -1,0 +1,870 @@
+# Documentación del proyecto Bebop (antes Vuelo_bebop_v1)
+
+Guía completa para quien llega nuevo al proyecto. Explica qué se busca, cómo está organizado el código, cómo fluye la información entre nodos, cómo volar en simulación y con el dron real, y qué limitaciones conocidas hay.
+
+---
+
+## Índice
+
+1. [Objetivo del proyecto](#1-objetivo-del-proyecto)
+2. [Estructura del repositorio](#2-estructura-del-repositorio)
+3. [Instalación y compilación](#3-instalación-y-compilación)
+4. [Arquitectura general](#4-arquitectura-general)
+5. [Marcos de referencia y convenciones](#5-marcos-de-referencia-y-convenciones)
+6. [Máquina de estados de vuelo](#6-máquina-de-estados-de-vuelo)
+7. [Nodos del paquete control_bebop](#7-nodos-del-paquete-control_bebop)
+8. [Mando PS5 DualSense](#8-mando-ps5-dualsense)
+9. [Configuración y parámetros](#9-configuración-y-parámetros)
+10. [Cómo volar](#10-cómo-volar)
+11. [Datos: bags, videos y análisis](#11-datos-bags-videos-y-análisis)
+12. [Simulación contra dron real](#12-simulación-contra-dron-real)
+13. [Dinámica del Bebop y ajuste de ganancias](#13-dinámica-del-bebop-y-ajuste-de-ganancias)
+14. [Seguridad](#14-seguridad)
+15. [Problemas conocidos y limitaciones](#15-problemas-conocidos-y-limitaciones)
+16. [Pruebas](#16-pruebas)
+17. [Próximos pasos del proyecto](#17-próximos-pasos-del-proyecto)
+18. [Glosario](#18-glosario)
+
+---
+
+## 1. Objetivo del proyecto
+
+El proyecto busca reconstruir en 3D un objeto de interés usando un dron Parrot Bebop 2. El flujo completo tiene cuatro fases:
+
+1. **Primer vuelo.** El dron rodea el objeto en una trayectoria circular, con la cámara siempre apuntando al centro, y graba video.
+2. **Reconstrucción.** Con el video se hace una reconstrucción 3D del objeto, por ejemplo por fotogrametría.
+3. **NBV (Next Best View).** Se analiza la reconstrucción para encontrar las zonas con poca información y calcular desde dónde convendría verlas.
+4. **Segundo vuelo optimizado.** El dron vuela a esas vistas para completar la reconstrucción.
+
+**Estado actual (octubre 2026):** fase 1, vuelo experimental. Este repositorio contiene el sistema de control de vuelo, la trayectoria circular, la grabación de video y la simulación. Hay un primer pipeline de reconstrucción (fase 2) con COLMAP: ver [control_bebop/RECONSTRUCCION_3D.md](control_bebop/RECONSTRUCCION_3D.md). El NBV todavía no está en el repositorio.
+
+---
+
+## 2. Estructura del repositorio
+
+```
+~/ros2_ws/src/Proyecto_tesis/bebop/   Sección Bebop del repositorio Proyecto_tesis (rama main)
+├── README.md               Portada breve del repositorio
+├── DOCUMENTACION.md        Este documento
+├── CONTEXTO.md             Resumen y estado actual
+├── ARQUITECTURA_VUELO.md   Esquema real contra simulación y orden de trabajo
+├── GUIA_PRUEBAS_Y_LOCALIZACION.md  Pruebas, ArUco, calibración de cámara, localización visual
+├── patches/                Parches a paquetes externos (altura real en el driver)
+├── bebop_ros/              Simulación en Gazebo (copia de juliordzcer/bebop_ros)
+│   ├── bebop_gz/           Mundo bebop1.sdf, modelo del dron, plugins de Gazebo
+│   ├── bebop_demo/         set_pose (pose inicial) y config del puente ROS↔Gazebo
+│   ├── bebop_controller/   PID de ejemplo del repo original (no se usa aquí)
+│   ├── bebop_bearings/     Control de formación (no se usa aquí)
+│   ├── bebop_gui/          GUI Qt del repo original (no se usa aquí)
+│   └── bebop_ros_gz/       Metapaquete
+└── control_bebop/          ★ Paquete principal de este proyecto (Python, ament_python)
+    ├── control_bebop/      Código de los nodos
+    ├── launch/             Archivos de arranque
+    ├── config/             Parámetros YAML
+    ├── scripts/            Herramientas fuera de ROS (análisis de bags, reconstrucción 3D)
+    ├── test/               Pruebas unitarias
+    ├── resource/meshes/    Modelos 3D de objetos para Gazebo
+    └── bags/               Vuelos grabados (no se suben a git)
+```
+
+### Paquetes externos necesarios en el workspace
+
+No están en este repositorio, pero deben estar en `~/ros2_ws/src`:
+
+| Paquete | Origen | Para qué sirve |
+|---|---|---|
+| `ros2_bebop_driver` | github.com/jeremyfix/ros2_bebop_driver | Driver ROS 2 del Bebop real: comandos, odometría, cámara |
+| `ros2_parrot_arsdk` | Dependencia del driver | SDK oficial de Parrot (ARSDK 3.14) compilado |
+
+El driver es de terceros. Su autor lo declara versión alfa, con odometría poco probada. Este proyecto le aplica un parche, `patches/ros2_bebop_driver_altitude.patch`, que publica la altura real en `/bebop/altitude` y fija el techo de firmware con el parámetro `max_altitude`. También agrega al launch del driver el argumento `camera_calibration_file` y el arreglo `const AVCodec*` que pide el FFmpeg de Ubuntu 24.04. Se aplica con `git apply`, ver `patches/README.md`; en el escritorio ya está aplicado (22 oct 2026). Sin el parche el sistema funciona, pero la z vuelve a ser la velocidad integrada.
+
+---
+
+## 3. Instalación y compilación
+
+### Entornos usados
+
+El proyecto se usa en dos computadoras:
+
+| Equipo | Sistema | ROS 2 | Gazebo | Launch de simulación |
+|---|---|---|---|---|
+| Laptop | Ubuntu 22.04 | Humble | Fortress | `sim_flight_humble.launch.py` |
+| Escritorio | Ubuntu 24.04 | Jazzy | Harmonic | `main_flight.launch.py` |
+
+### Dependencias de Python
+
+| Biblioteca | Usada por |
+|---|---|
+| numpy, matplotlib | GUIs, análisis, previsualización |
+| opencv (`cv2`), `cv_bridge` | Grabación de video, YOLO |
+| PyQt5 | `muestra_odometria_gui` |
+| tkinter | `gui_odometria` |
+| ultralytics | Detección YOLOv8 (en el entorno virtual `~/rob_env`) |
+| rosbags | `datos.py`, `analisis_deriva.py` (entorno `~/env_dron` o `~/rob_env`) |
+| casadi | `consumo_energ.py` (borrador) |
+| pyyaml | `analisis_deriva.py` |
+
+Varios nodos agregan a mano `~/rob_env/.../site-packages` o `~/env_dron/.../site-packages` a `sys.path`, para encontrar bibliotecas instaladas en esos entornos virtuales.
+
+### Compilar
+
+```bash
+cd ~/ros2_ws
+source /opt/ros/humble/setup.bash        # o jazzy
+colcon build --packages-select control_bebop
+# La primera vez, también la simulación y el driver:
+# (antes, aplicar patches/ros2_bebop_driver_altitude.patch al driver)
+colcon build --packages-select bebop_gz bebop_demo ros2_parrot_arsdk ros2_bebop_driver
+source install/setup.bash
+```
+
+Cada cambio en el código Python o en los YAML requiere volver a compilar `control_bebop`, porque los launches leen los archivos instalados en `install/`, no los de `src/`.
+
+---
+
+## 4. Arquitectura general
+
+El sistema se divide en nodos con una sola responsabilidad cada uno. El **flight_manager** decide en qué estado está el vuelo. El **trajectory_planner** dice a dónde ir. El **control_PID** calcula el comando. El **real_drone_bridge** lo filtra y se lo entrega al driver.
+
+### Vuelo real (`real_flight.launch.py`)
+
+```mermaid
+flowchart LR
+    joy[joy_node] -->|/joy| ji[joystick_interface]
+    ji -->|/joy_commands| fm[flight_manager]
+    ji -->|/deadman_active| fm
+    ji -->|/joy_cmd| fm
+    ji -->|/joy_cmd| pid[control_PID]
+    fm -->|/flight_state| pid
+    fm -->|/flight_state| tp[trajectory_planner]
+    fm -->|/flight_state| vid[nodo_video]
+    fm -->|/goal en HOVER, RECOVERY, HOME| pid
+    tp -->|/goal, /goal_vel| pid
+    tp -->|/trajectory_done, /trajectory_stalled| fm
+    pid -->|/bridge/cmd_vel_raw| br[real_drone_bridge]
+    fm -->|/bridge/takeoff, land, emergency, flattrim| br
+    br -->|/bebop/cmd_vel, takeoff, land, reset, flattrim| drv[ros2_bebop_driver]
+    drv -->|/bebop/odom| br
+    drv -->|/bebop/altitude| br
+    br -->|/bebop1/pose| fm
+    br -->|/bebop1/pose| tp
+    br -->|/bebop1/pose| pid
+    br -->|/odom_local| pid
+    drv -->|/bebop/camera/image_raw| vid
+```
+
+### Simulación (`sim_flight_humble.launch.py` o `main_flight.launch.py`)
+
+En simulación no hay bridge ni driver. Gazebo publica la pose exacta en `/bebop1/pose_gt` (puente `config/sim_bridge.yaml`). `sim_odometry` la convierte en una odometría con deriva, como la del Bebop, y la corrige con los ArUco que ve la cámara simulada (`aruco_localizer`, mapa `config/aruco_map_sim.yaml`), igual que el bridge en el vuelo real (ver [GUIA_PRUEBAS_Y_LOCALIZACION.md](GUIA_PRUEBAS_Y_LOCALIZACION.md) §1). También hace de bridge para los comandos: el PID publica en `/bridge/cmd_vel_raw`, como en el real, y `sim_odometry` aplica la misma geocerca y el mismo watchdog antes de mandarlo a `/bebop1/cmd_vel`.
+
+```mermaid
+flowchart LR
+    gz[Gazebo + ros_gz_bridge] -->|/bebop1/pose_gt| so[sim_odometry]
+    gz -->|imagen| al[aruco_localizer]
+    al -->|/vision/onboard/pose| so
+    so -->|/bebop1/pose| fm[flight_manager]
+    so -->|/bebop1/pose| tp[trajectory_planner]
+    so -->|/bebop1/pose| pid[control_PID]
+    fm -->|/bebop1/enable| gz
+    fm -->|/bridge/takeoff, /bridge/land| so
+    pid -->|/bridge/cmd_vel_raw| so
+    so -->|/bebop1/cmd_vel con geocerca| gz
+    sp[set_pose] -->|/bebop1/set_pose| gz
+```
+
+### Tópicos principales
+
+| Tópico | Tipo | Publica | Contenido |
+|---|---|---|---|
+| `/flight_state` | Int32 | flight_manager | Estado actual (0 a 8, ver sección 6) |
+| `/goal` | Pose | trajectory_planner o flight_manager | Posición y yaw deseados, marco de despegue |
+| `/goal_vel` | Twist | trajectory_planner | Velocidad del setpoint, para feedforward |
+| `/trajectory_done` | Bool | trajectory_planner | `True` al completar una vuelta |
+| `/trajectory_stalled` | Bool | trajectory_planner | `True` si la órbita lleva `stall_timeout` s detenida |
+| `/bebop/altitude` | Float64 | driver (con parche) | Altura medida sobre el despegue, sonar y barómetro |
+| `/bebop1/pose` | Pose | bridge (real) o sim_odometry (sim) | Posición actual, marco de despegue (corral si la visión está al mando) |
+| `/bebop1/pose_gt` | Pose | Gazebo (sim) | Pose exacta, solo para comparar |
+| `/odom_local` | Odometry | bridge | Pose local y velocidad en marco del cuerpo |
+| `/bridge/cmd_vel_raw` | Twist | control_PID (real) | Comando normalizado antes de seguridad |
+| `/bebop/cmd_vel` | Twist | bridge | Comando final al driver |
+| `/bebop/odom` | Odometry | driver | Odometría cruda (Norte, Oeste, Arriba) |
+| `/bebop/camera/image_raw` | Image | driver | Video de la cámara del Bebop |
+| `/bebop/move_camera` | Vector3 | control_camara, GUIs | Orientación de la cámara digital |
+| `/joy` | Joy | joy_node | Lectura cruda del mando |
+| `/joy_commands` | Int32 | joystick_interface, control_panel | Botones, como códigos 10 a 19 |
+| `/joy_cmd` | Twist | joystick_interface | Sticks escalados, solo con deadman activo |
+| `/deadman_active` | Bool | joystick_interface, control_panel | L2 presionado |
+| `/bebop1/enable` | Bool | flight_manager | Habilita los motores en Gazebo |
+| `/vision/onboard/pose` | PoseWithCovarianceStamped | aruco_localizer | Pose del dron medida con los ArUco, marco corral |
+| `/vision/fused_pose` | PoseStamped | bridge o sim_odometry | Pose corregida, solo en modo sombra |
+| `/vision/odom_pose` | PoseStamped | bridge o sim_odometry | Odometría sin corregir, solo con la visión al mando |
+| `/vision/lock` | Bool | bridge o sim_odometry | Incertidumbre de la posición < `vision_max_sigma` |
+
+### Frecuencias
+
+| Elemento | Frecuencia |
+|---|---|
+| Estado enviado por el Bebop (velocidad, actitud) | ~5 Hz |
+| `/bebop/odom` publicado por el driver | 15 Hz |
+| `control_PID` | 10 Hz |
+| `trajectory_planner` y `flight_manager` | 20 Hz |
+| Watchdog del bridge hacia el driver | 20 Hz |
+| Cámara del driver | ~33 Hz |
+
+---
+
+## 5. Marcos de referencia y convenciones
+
+### Odometría del driver (`/bebop/odom`)
+
+El driver no mide posición. Toma la velocidad que reporta el Bebop, estimada con flujo óptico, sonar y barómetro, y la **integra en el tiempo**. Sus ejes son:
+
+- x = Norte, y = Oeste, z = Arriba.
+- yaw = rumbo antihorario medido desde el Norte, según el magnetómetro.
+- La velocidad del twist viene en marco del cuerpo.
+
+Como la posición es una suma de velocidades, acumula error. En z el error es grande, ver la sección 15. Por eso, con el parche del driver, el bridge toma la z de `/bebop/altitude`, que es la altura medida por el Bebop, y solo usa la z integrada si esa altura no llega.
+
+### Marco de despegue (el que usa todo control_bebop)
+
+`real_drone_bridge` convierte la odometría a un marco anclado al punto de despegue, usando la clase `TakeoffFrame` de `frames.py`:
+
+- Origen: donde estaba el dron al recibir el comando de despegue.
+- x: hacia donde apuntaba el frente del dron al despegar.
+- y: a la izquierda del dron al despegar.
+- z: hacia arriba.
+- yaw: 0 al despegar, positivo antihorario.
+
+Por eso **siempre hay que despegar con el dron mirando en la dirección que se quiere usar como +x**. El objeto a reconstruir se coloca respecto a ese marco. Con la configuración por defecto, el centro del círculo está 1 m al frente del despegue.
+
+El bridge puede corregir la escala con `scale_x` y `scale_y`, obtenidos con `analisis_deriva`, y restar un sesgo de velocidad con `odom_bias_vx` y `odom_bias_vy`.
+
+### Semántica de los comandos (Twist)
+
+| Campo | Dron real (driver) | Gazebo |
+|---|---|---|
+| `linear.x` | pitch, fracción [-1, 1] de la inclinación máxima, + adelante | velocidad adelante, m/s |
+| `linear.y` | roll, fracción [-1, 1], + izquierda | velocidad izquierda, m/s |
+| `linear.z` | gaz, velocidad vertical [-1, 1], + arriba | velocidad vertical, m/s |
+| `angular.z` | velocidad de giro [-1, 1], + antihorario | velocidad de giro, rad/s |
+
+Si los cuatro campos valen 0, el Bebop real entra en **hover nativo**: mantiene la posición con su flujo óptico y la altura con sonar y barómetro.
+
+La diferencia entre las dos columnas es fundamental, ver la sección 12.
+
+---
+
+## 6. Máquina de estados de vuelo
+
+El `flight_manager` es el único nodo que publica `/flight_state`. Los demás nodos cambian su comportamiento según ese estado.
+
+| Valor | Estado | Qué pasa |
+|---|---|---|
+| 0 | IDLE | En tierra, motores apagados |
+| 1 | AUTOMATIC | El trajectory_planner genera la trayectoria circular |
+| 2 | TAKING_OFF | Despegue. Real: lo hace el Bebop y dura 4 s. Sim: el PID sube a 1 m |
+| 3 | LANDING | Aterrizaje. Real: lo hace el Bebop y dura 4.5 s. Sim: baja a 0.3 m/s |
+| 4 | EMERGENCY | Motores apagados (corte L1 + R1 + △). Se sale con Options hacia IDLE |
+| 5 | HOVER | Mantener posición con comando cero. Real: hover nativo del Bebop. Sim: el controlador de velocidad de Gazebo |
+| 6 | MANUAL | El mando controla directamente |
+| 7 | RECOVERY | Regreso automático a (0, 0) al salir de la arena |
+| 8 | RETURN_HOME | Regreso a home, por botón o al terminar la órbita |
+
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE
+    IDLE --> TAKING_OFF: × con L2
+    TAKING_OFF --> HOVER: 4 s (real) o altura alcanzada (sim)
+    HOVER --> AUTOMATIC: R1 o □ con L2
+    HOVER --> MANUAL: □ con L2
+    AUTOMATIC --> MANUAL: □ con L2
+    MANUAL --> AUTOMATIC: □ o R1 con L2
+    AUTOMATIC --> HOVER: soltar L2 más de 0.5 s
+    MANUAL --> HOVER: soltar L2 más de 0.5 s
+    AUTOMATIC --> RETURN_HOME: órbita completa o L1
+    HOVER --> RETURN_HOME: L1
+    MANUAL --> RETURN_HOME: L1
+    RETURN_HOME --> LANDING: llega a home
+    AUTOMATIC --> RECOVERY: sale de la arena
+    MANUAL --> RECOVERY: sale de la arena
+    HOVER --> RECOVERY: sale de la arena
+    RECOVERY --> HOVER: llega al centro
+    HOVER --> LANDING: ○
+    MANUAL --> LANDING: ○
+    LANDING --> IDLE: 4.5 s (real) o toca piso (sim)
+    EMERGENCY --> IDLE: Options
+```
+
+Otras reglas:
+
+- **○ aterriza desde cualquier estado en vuelo.** Usa `_force_landing`, que ignora la tabla de transiciones.
+- **△ es aterrizaje inmediato**, no corte de motores, en el dron real y en simulación.
+- **L1 + R1 + △ es el corte total de motores** (KILL). El dron cae. Solo para emergencias reales.
+- **Pérdida del mando:** si no llegan mensajes de `/deadman_active` en 3 s en HOVER, MANUAL o AUTOMATIC, aterriza (real y simulación).
+
+Los controles y la máquina de estados son idénticos en simulación y en el dron real. Solo cambia lo físico: en el real el despegue y el aterrizaje los hace el autopiloto del Bebop (por tiempo) y en Gazebo el PID (por altura).
+
+---
+
+## 7. Nodos del paquete control_bebop
+
+Los ejecutables se declaran en `control_bebop/setup.py`. Se corren con `ros2 run control_bebop <ejecutable>`.
+
+### 7.1 flight_manager (`flight_manager.py`)
+
+Máquina de estados maestra. Escucha el mando, la pose y la señal de órbita completa. Publica el estado, el goal en los estados que no son AUTOMATIC y los comandos discretos al bridge.
+
+En cada ciclo de 20 Hz:
+
+1. Publica `/flight_state`.
+2. Revisa el deadman y la pérdida de mando.
+3. Revisa los límites de la arena. Si `|x|` o `|y|` supera `arena_half_size − safety_margin`, pasa a RECOVERY. Si `z_geofence_enabled` está activo y z supera `max_altitude`, también.
+4. Ejecuta la lógica del estado: en HOVER publica el goal fijo, en MANUAL integra el joystick en el goal, en RECOVERY y RETURN_HOME publica el punto destino y detecta la llegada con `position_tolerance`.
+
+Al completar la órbita, si `auto_land_after_orbit` es verdadero, pasa a RETURN_HOME. Al llegar a home, si `auto_land_on_home` es verdadero, aterriza.
+
+Si recibe `/trajectory_stalled` en AUTOMATIC, pasa a HOVER. Con comando cero el Bebop recupera su hover nativo. Se reanuda con R1 y L2, desde el punto de la órbita donde se quedó.
+
+Parámetros principales: `use_real_drone`, `takeoff_height`, `arena_half_size`, `max_altitude`, `safety_margin`, `deadman_timeout`, `comm_loss_land_timeout`, `takeoff_settle_time`, `landing_settle_time`, `position_tolerance`, `home_x`, `home_y`, `z_geofence_enabled`.
+
+### 7.2 joystick_interface (`joystick_interface.py`)
+
+Traduce `/joy` en tres salidas:
+
+- `/deadman_active`: L2 presionado más allá de `deadman_threshold`. Se publica con cada mensaje de `/joy`.
+- `/joy_commands`: un código por botón, solo en el flanco de subida.
+- `/joy_cmd`: sticks con zona muerta, multiplicados por los máximos configurados. Vale cero si no se sostiene L2.
+
+El botón □ alterna según el estado real: en MANUAL pide AUTOMATIC y en cualquier otro estado pide MANUAL.
+
+### 7.3 trajectory_planner (`trajectory_controller.py`)
+
+Genera la órbita circular. Solo trabaja en AUTOMATIC. El archivo es `trajectory_controller.py`; el ejecutable y el nodo se llaman `trajectory_planner` en todos los launches.
+
+Fases internas:
+
+| Fase | Qué hace |
+|---|---|
+| idle | Espera AUTOMATIC |
+| goto_start | Calcula el punto del círculo más cercano al dron y mueve el setpoint hacia él en rampa, a `approach_speed` |
+| settling | Espera a estar a menos de `2·start_tolerance` del punto y con error de yaw menor a `settle_yaw_tolerance`, durante `settle_time` |
+| orbiting | Avanza el ángulo θ con velocidad ω = `circle_speed`, acelerando durante `omega_ramp_time` |
+| completed | Publica `/trajectory_done` al recorrer 2π |
+| paused | Si se sale de AUTOMATIC a mitad. Al volver, regresa en rampa al punto donde se quedó |
+
+**Seguimiento con freno.** Durante la órbita, θ avanza más lento si el dron se atrasa. Entre `track_err_slow` y `track_err_stop` de error de posición la velocidad baja linealmente hasta detenerse. Lo mismo pasa con el error de yaw entre `yaw_err_slow` y `yaw_err_stop`. Así la vuelta no se da por terminada con el dron atrasado.
+
+**Órbita atascada.** Si θ queda detenido durante `stall_timeout` segundos (3 s), publica `/trajectory_stalled` y el flight_manager pasa a HOVER. Se agregó tras el vuelo del 16 de octubre de 2026: el dron derivó hacia atrás, θ estuvo detenido unos 10 s y el PID siguió mandando comandos pequeños mientras el dron se alejaba. Con esta protección habría pasado a HOVER a los 57 s.
+
+**Modos de yaw.**
+
+- `lookat`: el frente del dron apunta siempre al centro del círculo o a `(lookat_x, lookat_y)`. Es el modo para filmar el objeto. Obliga al dron a girar a la misma ω de la órbita, por eso ω se limita a `max_yaw_rate`.
+- `fixed`: mantiene el yaw que tenía al entrar a AUTOMATIC.
+
+**Altura.** Con `hold_entry_altitude: true` se usa la altura actual al entrar, limitada a [0.5, 1.8] m, para evitar saltos. En el dron real con `z_mode: native` la z del goal no se usa.
+
+**Arena.** Si el radio no cabe en `arena_half_size − safety_margin`, se reduce. Cada setpoint se recorta a esa zona.
+
+Además publica `/goal_vel`, la velocidad del setpoint por diferencias finitas, para el feedforward del PID.
+
+### 7.4 control_PID (`control_PID.py`)
+
+Lazo de control a 10 Hz. Recibe pose, goal, velocidad del goal y estado, y publica el comando en `cmd_vel_topic`: `/bridge/cmd_vel_raw` en real, `/bebop1/cmd_vel` en simulación.
+
+Comportamiento por estado:
+
+| Estado | Salida |
+|---|---|
+| IDLE, EMERGENCY | Ceros |
+| MANUAL | El `/joy_cmd` tal cual |
+| HOVER | Ceros: hover nativo en el real, controlador de velocidad en Gazebo (`pid_in_hover: true` lo cambia por el PID) |
+| TAKING_OFF, LANDING con dron real | Ceros, para que actúe el autopiloto del Bebop |
+| Los demás | Lazo PID de posición |
+
+**Lazo XY.**
+
+1. Error de posición en el marco de despegue, limitado a ±1 m, por `kp_xy`.
+2. Término D:
+   - Con `/odom_local` reciente: `kd_xy · (v_ref − v_medida)`. La velocidad medida es el twist del driver rotado por el yaw actual y escalado por `scale_x` y `scale_y`.
+   - Sin `/odom_local`, como en simulación: `−kd_xy` por la derivada filtrada de la posición.
+3. Integral pequeña, `ki_xy`, con límite `int_limit_xy`.
+4. Rotación del comando del marco de despegue al marco del cuerpo, con el yaw actual.
+5. Feedforward en AUTOMATIC: `ff_gain_xy · v_ref`, también rotado al cuerpo.
+6. Saturación con `max_vel_xy`.
+
+**Yaw.** P sobre el error de yaw normalizado y D con la velocidad de giro estimada. En AUTOMATIC se suma `ff_gain_yaw · ω_ref`. Satura en `max_vel_yaw`.
+
+**Altura (`z_mode`).**
+
+- `native`, para el dron real: gaz = 0 en AUTOMATIC y el Bebop mantiene su altura. Con `native_z_guard: true` se corrige con ±0.2 si el error supera 0.40 m. Está activo porque la z ya es la altura medida. Si el driver no tiene el parche, hay que desactivarlo: la z integrada deriva.
+- `pid`: lazo PID completo sobre z, como en simulación.
+
+Al cambiar de estado se reinician integradores y feedforward.
+
+### 7.5 real_drone_bridge (`real_drone_bridge.py`)
+
+Único punto de contacto con el driver del dron real.
+
+- **Odometría.** Convierte `/bebop/odom` al marco de despegue y publica `/bebop1/pose` y `/odom_local`. El origen se re-ancla cada vez que llega `/bridge/takeoff`.
+- **Altura.** Con `use_altitude_topic: true`, la z de `/bebop1/pose` es `/bebop/altitude` si llegó hace menos de `altitude_timeout` (1 s). Si no, usa la z integrada y avisa cada 5 s.
+- **Comandos.** Al recibir `/bridge/cmd_vel_raw` le suma el trim y lo satura con `max_cmd_xy`, `max_cmd_z` y `max_cmd_yaw`. A 20 Hz aplica la geocerca y lo publica en `/bebop/cmd_vel`.
+- **Watchdog.** Si no llega comando en `cmd_timeout` (0.3 s), publica ceros (hover nativo aunque el PID se caiga). La geocerca actúa también sobre esos ceros.
+- **Geocerca en todo el vuelo** (`CommandGate` de `safety.py`): desde `/bridge/takeoff` hasta `/bridge/land` o `/bridge/emergency`, en cualquier estado (AUTOMATIC, MANUAL, HOVER, RECOVERY, RETURN_HOME) y para cualquier origen del comando (PID, mando, modo muestra). Usa la velocidad medida del Bebop y, con `geofence_use_vision`, la pose corregida por los ArUco cuando hay lock, aunque el control vuele en modo sombra. No actúa en tierra ni al aterrizar, para no impedir un aterrizaje fuera de la zona segura.
+- **Discretos.** `/bridge/takeoff`, `land`, `emergency` y `flattrim` se reenvían a `/bebop/takeoff`, `land`, `reset` y `flattrim`. Ojo: `/bebop/reset` corta motores.
+- Avisa cada 5 s si no llega odometría.
+
+### 7.6 Módulos sin ROS: `frames.py` y `safety.py`
+
+Se pueden probar con pytest sin ROS.
+
+- `frames.py`: normalización de ángulos, cuaterniones, `rotate2d` y la clase `TakeoffFrame`.
+- `safety.py`: `apply_geofence` filtra un comando según la pose y la velocidad. En cada eje, hacia afuera solo deja ir a `(1.7 m − |p|) / lookahead` m/s: si va más rápido frena con `brake_gain` por cada m/s de exceso, y si va más lento limita el comando hacia afuera. Pasando `half_size − hard_margin` (1.7 m) empuja hacia adentro, más fuerte cuanto más se pasa. Así frena con tiempo pese al retardo del Bebop: con los modelos identificados y el piloto empujando hacia la valla, el peor caso se detiene en ~2.02 m (prueba `test_geofence_stops_identified_bebop_models`); la geocerca anterior, que solo ponía en cero el comando a partir de 1.5 m, dejaba llegar hasta 5 m. En z hay techo y piso, desactivables con `z_enabled`, y la altura mínima fuera de la zona segura. `CommandGate` junta último comando, watchdog y geocerca; lo usan el bridge y `sim_odometry`.
+
+### 7.7 nodo_video (`nodo_video.py`)
+
+Graba la cámara a un archivo AVI (XVID) mientras el dron está en vuelo: estados 1, 2, 5, 6, 7 y 8. Crea un archivo nuevo `vuelo_<fecha>_<hora>.avi` en cada vuelo.
+
+| Parámetro | Defecto |
+|---|---|
+| `image_topic` | `/bebop/camera/image_raw` (en simulación, `sim.yaml` usa el tópico de la cámara de Gazebo) |
+| `camera_fps` | 30 (15 en simulación) |
+| `output_dir` | vacío = `control_bebop/videos` |
+
+`camera_fps` es la frecuencia del AVI, no tiene que coincidir con la de la cámara. Cada cuadro se escribe según su marca de tiempo (`frame_pacer.py`): se repite si la cámara va más lenta y se descarta si va más rápida, así el video dura lo mismo que el vuelo. En Gazebo las marcas son tiempo simulado.
+
+Este video es la entrada para la reconstrucción 3D: `python3 control_bebop/scripts/reconstruccion_3d.py <video.avi>` (ver [control_bebop/RECONSTRUCCION_3D.md](control_bebop/RECONSTRUCCION_3D.md)).
+
+### 7.8 control_camara (`control_camara.py`)
+
+Orienta la cámara digital del Bebop, que es un ojo de pez recortado por software. Inclinación de −85° a +17° y giro de −35° a +35°. Se controla con la cruceta del mando, con `/bebop/camera/set_tilt`, `/bebop/camera/set_pan` o con presets en `/bebop/camera/preset`: `horizon`, `front`, `center`, `people`, `desk`, `down` y `floor`. Publica en `/bebop/move_camera`.
+
+No está en `real_flight.launch.py`. Si se agrega, choca con el joystick: los dos usan la cruceta (ver sección 15).
+
+### 7.9 Interfaces gráficas
+
+| Ejecutable | Qué muestra |
+|---|---|
+| `gui_odometria` | Ventana tkinter con posición, distancia al origen, orientación, velocidades, estado y trayectoria. Se abre en `real_flight` (`launch_gui:=false` para quitarla) |
+| `muestra_odometria_gui` | Suite PyQt5 para demostraciones: mapa 2D/3D, horizonte artificial, telemetría, cámara con YOLO y monitor del mando |
+| `odom_viewer` | Convierte `/bebop1/pose` en `/bebop1/odom` para `rqt_plot` y registra el estado |
+| `trajectory_preview` | Dron virtual con retardo de primer orden que sigue el `/goal`. Dibuja la trayectoria sin Gazebo ni dron |
+
+### 7.10 Modo muestra: `demo_safety_manager`
+
+Usado por `muestra_profesional.launch.py` para exhibiciones. **El dron sí vuela:** el Bebop no tiene un modo de motores en ralentí, así que el takeoff lo sube a ~1 m y con comando cero queda en hover nativo. Usa los mismos botones que el vuelo real: L2 + × despega, ○ y △ aterrizan, L1 + R1 + △ corta motores, Share FlatTrim. La GUI tiene botones de despegar, aterrizar y corte total. Todo pasa por el bridge (`/bridge/*`), que aplica la geocerca y el watchdog. Publica su estado en `/demo/status` y recibe comandos de la GUI en `/demo/command`. Con `stop_on_deadman_release` aterriza al soltar L2.
+
+Antes del 22 oct encendía los motores con solo presionar L2, sin ×, y mandaba cada comando tres veces directo al driver sin pasar por la geocerca.
+
+### 7.11 Detección YOLO
+
+- `yolo_person_detector.py`: clase `YoloPersonDetector` con YOLOv8. Filtra personas y estima la distancia con el modelo pinhole. Busca `yolov8n.pt` en varias rutas. La usa `muestra_odometria_gui`.
+- `diagnostico_yolo`: comprueba que la cámara publica, centra la cámara, corre YOLO e imprime detecciones. Guarda un cuadro en `/tmp/diagnostico_yolo.jpg`.
+
+### 7.12 control_panel
+
+Alternativa al mando desde la terminal. Teclas: `t` despegar, `s` trayectoria, `m` manual, `l` aterrizar, `r` home, `e` emergencia, `x` reset, `q` salir. **Simula el deadman siempre presionado.** Úsalo solo en simulación.
+
+### 7.13 Archivos en desarrollo
+
+- `consumo_energ.py`: borrador de un optimizador de trayectoria de mínima energía con casadi. Todas las constantes físicas valen 0 y no es ejecutable registrado.
+- `control_vuelo.py`: vacío.
+
+### 7.14 Localización visual: `aruco_localizer`, `sim_odometry`, `vision.py`
+
+`aruco_localizer` mide la pose del dron con los ArUco que ve la cámara del Bebop (mapa `config/aruco_map.yaml`) y la publica en `/vision/onboard/pose`. `VisionFusion` (`vision.py`), dentro del bridge, corrige con ella el error acumulado de la odometría. En simulación `sim_odometry` hace lo mismo con una odometría con deriva inventada. Diseño, montaje de marcadores y pruebas en [GUIA_PRUEBAS_Y_LOCALIZACION.md](GUIA_PRUEBAS_Y_LOCALIZACION.md).
+
+### 7.15 calibrar_camara (`calibrar_camara.py`, `calibracion.py`)
+
+Calibra la cámara del Bebop con un tablero ChArUco (`scripts/generar_charuco.py` lo genera). Toma vistas cuando el tablero está quieto y es distinto de las anteriores, calibra con OpenCV y escribe `config/bebop2_camera_calib.yaml` en el formato que carga el driver (`camera_calibration_file`). Funciona con OpenCV 4.6 (sistema) y ≥ 4.7. Procedimiento en la guía, §4.
+
+---
+
+## 8. Mando PS5 DualSense
+
+Verificado con un bag real: el mando entrega 8 ejes y 13 botones.
+
+| Control | Índice | Función |
+|---|---|---|
+| L2 | eje 2 | **Deadman.** Hay que sostenerlo para despegar, entrar en AUTOMATIC o MANUAL y mover el dron |
+| Stick izquierdo vertical | eje 1 | Adelante y atrás |
+| Stick izquierdo horizontal | eje 0 | Izquierda y derecha |
+| Cruceta vertical | eje 7 | Subir y bajar |
+| Cruceta horizontal | eje 6 | Girar |
+| × | botón 0 | Despegar, con L2 |
+| ○ | botón 1 | Aterrizar |
+| △ | botón 2 | Aterrizaje inmediato |
+| L1 + R1 + △ | | **Corte total de motores**. Al apretar L1 y R1 también salen sus comandos (home, órbita), pero △ deja el dron en EMERGENCY |
+| □ | botón 3 | Alternar MANUAL y AUTOMATIC, con L2 |
+| L1 | botón 4 | Regresar a home |
+| R1 | botón 5 | Iniciar trayectoria automática, con L2 |
+| Share | botón 8 | FlatTrim, solo en tierra |
+| Options | botón 9 | Salir de EMERGENCY |
+
+Los comentarios de `ps5_dualsense.yaml` dicen "stick derecho" para subir y girar, pero los índices 6 y 7 son la cruceta. Por eso en MANUAL el giro y la altura son todo o nada. Para usar el stick derecho, cambia a `axis_throttle: 4` y `axis_yaw: 3` y verifica con `ros2 topic echo /joy`.
+
+Velocidades máximas en MANUAL: `max_linear_speed`, `max_vertical_speed` y `max_yaw_rate` valen 0.5. En el dron real el bridge además limita XY a 0.4.
+
+---
+
+## 9. Configuración y parámetros
+
+### Archivos
+
+| Archivo | Uso |
+|---|---|
+| `config/real_drone.yaml` | Todos los parámetros del vuelo real. Aplica a todos los nodos con `/**` |
+| `config/real_drone_calibrated.yaml` | Solo escala de odometría. Lo genera `analisis_deriva` y se carga con `use_calibration:=true` |
+| `config/ps5_dualsense.yaml` | Mapeo del mando |
+| `config/sim.yaml` | Simulación. Los launches cargan primero `real_drone.yaml` y encima este, que solo cambia ganancias (comando de velocidad), `z_mode`, la cámara fija y el tamaño del corral |
+| `config/aruco_map.yaml`, `aruco_map_sim.yaml` | Posición de los ArUco del laboratorio y de Gazebo |
+| `config/bebop2_camera_calib.yaml` | Intrínsecos de la cámara del Bebop; lo escribe `calibrar_camara` |
+
+Si un parámetro aparece en el YAML y en el launch, gana el que se pasa después en la lista del launch.
+
+### Parámetros de `real_drone.yaml`
+
+**Geocerca y saturación del bridge** (también en simulación)
+
+| Parámetro | Valor | Significado |
+|---|---|---|
+| `geofence_enabled` | true | Geocerca en el aire, en todos los estados |
+| `arena_x_max` | 2.0 | Mitad del lado del área de vuelo, en m (≤ distancia a la valla más cercana) |
+| `geofence_lookahead` | 2.5 | s; la velocidad permitida hacia afuera es distancia / lookahead |
+| `geofence_brake_gain` | 2.0 | Comando de freno por m/s de exceso |
+| `geofence_push_gain`, `geofence_max_push` | 0.5, 0.4 | Empuje pasado 1.7 m y su tope |
+| `geofence_use_vision` | true | Usar la pose corregida por visión si hay lock, también en modo sombra |
+| `safe_zone_radius`, `min_z_outside_safe` | 0.5, 1.0 | Fuera del círculo no se baja de 1.0 m |
+| `max_z` | 2.0 | Techo de la geocerca, si está activa |
+| `z_geofence_enabled` | true | Techo y piso por software, con la altura medida |
+| `use_altitude_topic` | true | z de `/bebop/altitude` en vez de la integrada |
+| `altitude_timeout` | 1.0 | s sin altura antes de volver a la z integrada |
+| `max_cmd_xy` | 0.40 | Pitch y roll máximos enviados |
+| `max_cmd_z` | 0.60 | Gaz máximo |
+| `max_cmd_yaw` | 1.00 | Giro máximo |
+
+**PID**
+
+| Parámetro | Valor | Significado |
+|---|---|---|
+| `kp_xy`, `ki_xy`, `kd_xy` | 0.25, 0.05, 0.60 | Ganancias XY |
+| `int_limit_xy` | 2.0 | Límite del integrador. El integral aporta hasta `ki·int_limit` = 0.10 |
+| `use_measured_velocity` | true | Término D con la velocidad medida |
+| `kp_z`, `ki_z`, `kd_z` | 0.50, 0.02, 0.10 | Solo con `z_mode: pid` |
+| `kp_yaw`, `ki_yaw`, `kd_yaw` | 0.80, 0.0, 0.12 | Ganancias de giro |
+| `max_vel_xy`, `max_vel_z`, `max_vel_yaw` | 0.35, 0.40, 1.00 | Saturaciones del PID |
+| `z_mode` | native | El Bebop mantiene la altura |
+| `native_z_guard` | true | Corrige la altura si se aleja más de 0.40 m. Requiere el parche del driver |
+| `enable_feedforward` | true | Sumar la velocidad del goal |
+| `ff_gain_xy` | 0.20 | Comando por cada m/s pedido |
+| `ff_gain_yaw` | 4.5 | Comando por cada rad/s pedido, aproximadamente 1/0.21 |
+
+**Calibración**
+
+| Parámetro | Valor | Significado |
+|---|---|---|
+| `scale_x`, `scale_y` | 1.0 | Factor de escala de la odometría |
+| `trim_x`, `trim_y` | 0.0 | Comando constante sumado a pitch y roll |
+
+**Trayectoria**
+
+| Parámetro | Valor | Significado |
+|---|---|---|
+| `target_x`, `target_y` | 1.0, 0.0 | Centro del círculo, donde va el objeto |
+| `circle_radius` | 0.50 | Radio en m |
+| `circle_speed` | 0.10 | ω en rad/s: una vuelta en ~63 s |
+| `yaw_mode` | fixed | Mantener el rumbo de entrada (pruebas). `lookat` mira al centro, para el escaneo |
+| `lookat_center` | true | El punto a mirar es el centro |
+| `hold_entry_altitude` | true | Mantener la altura de entrada |
+| `min_entry_altitude` | 1.05 | Altura mínima de la órbita, sobre `min_z_outside_safe` |
+| `approach_speed` | 0.15 | m/s hacia el punto de entrada |
+| `settle_time` | 1.5 | s de espera antes de orbitar |
+| `omega_ramp_time` | 3.0 | s de aceleración de ω |
+| `start_tolerance` | 0.10 | m |
+| `max_yaw_rate` | 0.10 | Límite de ω en lookat |
+| `stall_timeout` | 3.0 | s con la órbita detenida antes de pasar a HOVER. 0 lo desactiva |
+
+Otros parámetros con valor por defecto en el código: `arena_half_size` 1.8 y `safety_margin` 0.20 en el planner, más `track_err_slow` 0.12, `track_err_stop` 0.30, `yaw_err_slow` 0.25 y `yaw_err_stop` 0.60.
+
+### Argumentos de `real_flight.launch.py`
+
+| Argumento | Defecto | Uso |
+|---|---|---|
+| `launch_driver` | false | Lanzar el driver desde aquí |
+| `ip` | 192.168.42.1 | IP del Bebop |
+| `launch_gui` | true | Abrir `gui_odometria` |
+| `use_calibration` | false | Cargar `real_drone_calibrated.yaml` |
+| `max_altitude` | 2.0 | Techo de firmware que se manda al driver, solo con `launch_driver:=true` |
+
+El launch también fija para el flight_manager `takeoff_height` 1.0, `arena_half_size` 2.0 y `max_altitude` 2.0.
+
+---
+
+## 10. Cómo volar
+
+### 10.1 Previsualizar la trayectoria, sin dron ni Gazebo
+
+```bash
+ros2 launch control_bebop preview_trajectory.launch.py
+```
+
+Usa los mismos parámetros que el vuelo real. Sirve para comprobar que el círculo cae donde se espera antes de volar.
+
+### 10.2 Simulación
+
+```bash
+# Humble / Fortress
+ros2 launch control_bebop sim_flight_humble.launch.py
+# Jazzy / Harmonic
+ros2 launch control_bebop main_flight.launch.py
+# Sin mando: agrega use_joystick:=false y en otra terminal
+ros2 run control_bebop control_panel
+```
+
+Secuencia: sostén L2, presiona × para despegar, espera HOVER, presiona R1 para la órbita. Al terminar regresa a home y aterriza solo.
+
+Los botones, la máquina de estados, la órbita y la visión son los del vuelo real (`real_drone.yaml`); con `vision_shadow:=true|false` se prueba el otro modo de visión sin tocar el yaml. Otros argumentos: `use_joystick`, `headless`, `record_bag`, `launch_gui`, `launch_plot3d`.
+
+El mundo `bebop1.sdf` tiene un corral de 4 × 4 m con 12 ArUco (misma disposición de ids que el laboratorio) y, en (1.0, 0.0), una caja texturizada de 0.70 m con un cilindro de 0.25 m encima. Las texturas y los modelos están en `control_bebop/resource/meshes`, que los launches agregan a la ruta de recursos de Gazebo. `nodo_video` graba la cámara del dron durante el vuelo en `control_bebop/videos`.
+
+### 10.3 Dron real
+
+**Preparación, una sola vez:**
+
+1. Aplica el parche del driver (`patches/README.md`; en el escritorio ya está). El techo de firmware se fija con el parámetro `max_altitude` del driver, 2 m por defecto, y se manda al dron en cada conexión. No hace falta FreeFlight.
+2. Monta y mide los ArUco, calibra la cámara y haz las pruebas sin volar: [GUIA_PRUEBAS_Y_LOCALIZACION.md](GUIA_PRUEBAS_Y_LOCALIZACION.md) §3, §4 y §6.
+3. Si las distancias reales no coinciden con la odometría, calibra la escala (sección 11.4).
+
+**Antes de cada vuelo:**
+
+1. Área despejada de al menos 4 × 4 m y buena luz. El piso necesita textura para el flujo óptico: un piso liso o brillante hace que la odometría no vea la deriva. Si hace falta, pon un tapete con patrón de alto contraste. Vuela lejos de estructuras metálicas.
+2. Batería del dron y del mando cargadas.
+3. Coloca el dron mirando hacia el objeto, con el objeto 1 m al frente, o donde indiquen `target_x` y `target_y`.
+4. Conecta la computadora al Wi-Fi del Bebop.
+
+**Arranque:**
+
+```bash
+# Terminal 1: driver. En el log debe aparecer "MaxAltitude current=2.00 m"
+ros2 launch ros2_bebop_driver bebop_node_launch.xml ip:=192.168.42.1 max_altitude:=2.0
+# Terminal 2: sistema completo, graba un bag automáticamente
+ros2 launch control_bebop real_flight.launch.py
+```
+
+**Secuencia:**
+
+1. Con el dron en el piso, Share para FlatTrim. Hazlo en cada vuelo.
+2. Sostén L2 y presiona × para despegar. Espera unos 4 s hasta HOVER.
+3. Sostén L2 y presiona R1. El dron va al punto de entrada, se estabiliza y orbita.
+4. **Mantén L2 todo el vuelo.** Si lo sueltas, el dron queda en HOVER. Si la órbita se atasca 3 s, también pasa a HOVER: R1 con L2 la reanuda.
+5. Al completar la vuelta regresa a home y aterriza solo. En cualquier momento, ○ aterriza.
+
+**Después:** analiza el bag (sección 11.3).
+
+### 10.4 Modo muestra
+
+```bash
+ros2 launch control_bebop muestra_profesional.launch.py   # launch_driver, use_joystick, record_bag
+```
+
+L2 + × despega y el dron queda en hover nativo a ~1 m. Sirve para exhibir la telemetría, la cámara y YOLO.
+
+---
+
+## 11. Datos: bags, videos y análisis
+
+### 11.1 Dónde se guarda cada cosa
+
+| Qué | Ruta | Contenido |
+|---|---|---|
+| Bags de vuelo real | `control_bebop/bags/vuelo_real_<fecha>/` | odom, cmd_vel, pose, odom_local, joy, joy_cmd, joy_commands, deadman_active, flight_state, goal, goal_vel, altitude, trajectory_stalled, vision/* |
+| Bags de simulación | `control_bebop/bags/vuelo_sim_<fecha>/` | pose, pose_gt, goal, flight_state, cmd_vel, mando, vision/* |
+| Bags del modo muestra | `control_bebop/bags/muestra_profesional_<hora>/` | Odometría, mando, estado de la muestra |
+| Videos | `control_bebop/videos/` | AVI de cada vuelo |
+| Reconstrucciones | `control_bebop/reconstrucciones/` | Salida de COLMAP |
+
+Las rutas las resuelve `control_bebop/paths.py`, relativas al código fuente en las dos máquinas. Los bags, videos y reconstrucciones no se suben a git.
+
+### 11.2 Convertir un bag a CSV
+
+```bash
+ros2 run control_bebop datos <carpeta_del_bag>   # requiere rosbags
+```
+
+Genera `<bag>_datos.csv` con tiempo, tópico, posición, yaw, velocidades y estado.
+
+### 11.3 Diagnóstico de un vuelo
+
+```bash
+source /opt/ros/humble/setup.bash
+python3 control_bebop/scripts/analisis_bag.py control_bebop/bags/vuelo_real_YYYYMMDD_HHMMSS
+```
+
+Reporta:
+- Los estados con sus tiempos.
+- El error de seguimiento en AUTOMATIC y el sobrepaso de la aproximación.
+- Los comandos de altura enviados y el giro máximo.
+- Cuánto tiempo estuvo detenido el goal y si se activó la órbita atascada.
+- La z integrada contra `/bebop/altitude`.
+- La posición final según la odometría. Si aterrizaste en el despegue, ese valor es el error acumulado.
+- Un modelo identificado del dron con su feedforward sugerido.
+
+Para ver el vuelo animado:
+
+```bash
+python3 control_bebop/scripts/replay_vuelo.py <csv o carpeta del bag> [--speed 2] [--static] [--save vuelo.mp4]
+```
+
+El replay dibuja la posición estimada por la odometría, no la real. Si en el replay el dron aterriza lejos del despegue aunque en realidad aterrizó ahí, la diferencia es error de odometría.
+
+### 11.4 Calibrar la escala de la odometría
+
+1. Graba un vuelo moviendo el dron una distancia conocida en x, medida con cinta.
+2. Corre:
+   ```bash
+   ros2 run control_bebop analisis_deriva <bag> --tape-x 1.5 --tape-y 0.0
+   ```
+3. Se genera `config/real_drone_calibrated.yaml` si la escala queda entre 0.5 y 2.0.
+4. Recompila y vuela con `use_calibration:=true`.
+
+El valor actual es 0.807: la odometría marca ~24 % más distancia que la real.
+
+---
+
+## 12. Simulación contra dron real
+
+Esta es la diferencia más importante del proyecto.
+
+| Aspecto | Gazebo | Bebop real |
+|---|---|---|
+| Qué significa el comando | Velocidad en m/s, con un controlador de velocidad interno (`MulticopterVelocityControl`) | Inclinación, que equivale a una aceleración |
+| Respuesta | Rápida, casi sin retardo | Retardo de 0.6 a 0.8 s y respuesta lenta |
+| Posición | Exacta, la da el simulador | Integrada desde velocidades, acumula error |
+| Altura | Exacta | Medida por el Bebop en `/bebop/altitude` (con el parche). La z integrada deriva hasta ~1 m por vuelo |
+| Hover | Lo sostiene el PID | Lo hace el autopiloto con comando cero |
+| Despegue y aterrizaje | Los hace el PID | Los hace el autopiloto |
+| Ganancias | Las del launch de simulación | Las de `real_drone.yaml` |
+
+**Consecuencia:** unas ganancias que funcionan en Gazebo no sirven en el dron real. Para el PID, el Bebop real es un sistema distinto. Las ganancias del real se ajustan con datos reales (sección 13).
+
+---
+
+## 13. Dinámica del Bebop y ajuste de ganancias
+
+Con los bags del 13 y 15 de octubre de 2026 se identificó un modelo de cómo responde el Bebop al comando de pitch:
+
+```
+dv/dt = a · u(t − retardo) − b · v
+```
+
+| Parámetro | Rango medido |
+|---|---|
+| a, aceleración por unidad de comando | 0.8 a 1.9 m/s² |
+| b, frenado por arrastre | 0.25 a 1.1 1/s |
+| retardo | 0.2 a 0.9 s |
+| velocidad de régimen por unidad | 1 a 5 m/s |
+| giro por unidad de comando | ~0.21 rad/s |
+
+Este modelo reprodujo el vuelo real del 15 de octubre. Con las ganancias de entonces predijo un pico de 0.90 m contra 0.97 m medidos y un periodo de oscilación de ~6 s.
+
+### Cómo se eligieron las ganancias actuales
+
+Se simuló el lazo con seis variantes del modelo y se buscaron ganancias que funcionaran en todas. El resultado fue kp 0.25, kd 0.60 y feedforward 0.20.
+
+| Ganancias | Sobrepaso en la aproximación | Error en la órbita |
+|---|---|---|
+| Anteriores: kp 0.70, kd 0.15, ff 1.25 | 0.36 a 1.6 m, inestable en dos modelos | hasta 1.8 m |
+| Actuales: kp 0.25, kd 0.60, ff 0.20 | 0 a 0.23 m | 0.10 m o menos |
+
+### Reglas prácticas para ajustar
+
+- **Oscila adelante y atrás:** baja `kp_xy` o sube `kd_xy`.
+- **Llega lento o se queda atrás en la órbita:** sube `ff_gain_xy` de 0.1 en 0.1. Más feedforward reduce el atraso pero aumenta el sobrepaso al llegar al punto de entrada.
+- **El giro no alcanza en lookat:** baja `circle_speed`. Con el comando máximo de 1.0 el Bebop gira ~0.21 rad/s, así que conviene dejar `circle_speed` en 0.15 o menos.
+- Después de cada cambio, vuela y corre `analisis_bag.py`.
+
+---
+
+## 14. Seguridad
+
+Capas de protección, de la más alta a la más baja:
+
+1. **Operador:** deadman L2, ○ para aterrizar, L1 + R1 + △ para cortar motores.
+2. **flight_manager:** soltar L2 lleva a HOVER, perder el mando 3 s lleva a aterrizar, salir de la arena lleva a RECOVERY.
+3. **trajectory_planner:** recorta los setpoints a la arena segura y, si la órbita se atasca 3 s, pide HOVER.
+4. **control_PID:** saturación de comandos.
+5. **real_drone_bridge** (y `sim_odometry` en simulación): saturación, geocerca XY con freno anticipado y en z con la altura medida, en todo el vuelo y sobre cualquier comando, y watchdog que manda ceros si el PID deja de publicar.
+6. **Firmware del Bebop:** altitud máxima enviada por el driver (`max_altitude`) y hover nativo con comando cero.
+
+Recomendaciones:
+
+- Haz siempre una prueba corta antes de la órbita completa: despegar, AUTOMATIC solo hasta el punto de entrada y aterrizar.
+- No uses `control_panel` con el dron real: anula el deadman.
+- El corte de motores hace caer el dron. Úsalo solo si hay riesgo para personas.
+
+---
+
+## 15. Problemas conocidos y limitaciones
+
+| Problema | Efecto | Situación |
+|---|---|---|
+| La z de `/bebop/odom` es velocidad integrada | Tras aterrizar marcó entre −0.31 y +1.07 m. El 16 oct mostró 1.78 m volando a ~1 m | Resuelto con el parche del driver: la z sale de `/bebop/altitude`. Aplicado en el escritorio el 22 oct; falta validarlo en vuelo |
+| La posición XY también acumula error | La órbita se desplaza poco a poco. El 16 oct el dron derivó 0.5 a 1.5 m hacia atrás, la odometría marcó ~0.25 m y terminó con 0.86 m de error al aterrizar | Corrección con los ArUco que ve la cámara del Bebop (`vision.py`), probada en simulación y pendiente de validar en vuelo (guía, §8–11). Además: piso con textura, el integral más fuerte y el HOVER por órbita atascada |
+| Con comando distinto de cero el Bebop no sostiene su posición | Comandos pequeños, de ~0.08, no alcanzan a vencer la deriva | Por eso, si la órbita se atasca, se pasa a HOVER (comando cero) |
+| Magnetómetro en interiores | El yaw y la rotación de velocidades se degradan cerca de metales | En lookat el dron gira 360°, así que influye. Vuela lejos de estructuras metálicas |
+| Altura y giro en la cruceta | Control todo o nada en MANUAL | Ver la sección 8 |
+| `control_camara` también usa la cruceta | Si corre con el joystick, mover la cámara también mueve el dron | No lanzarlos juntos sin cambiar el mapeo |
+| Nombre del archivo del planificador | `trajectory_controller.py`; ejecutable y nodo `trajectory_planner` | Solo es confuso |
+| Mapa de ArUco del laboratorio | Ids 3 y 5 con medidas que no cuadran (marcados `RE-MEDIR`) | Re-medir antes de poner la visión al mando |
+
+---
+
+## 16. Pruebas
+
+```bash
+cd ~/ros2_ws/src/Proyecto_tesis/bebop/control_bebop
+source /opt/ros/jazzy/setup.bash      # humble en la laptop
+python3 -m pytest test/ -q
+```
+
+65 pruebas sin ROS ni hardware:
+
+| Archivo | Cubre |
+|---|---|
+| `test_real_safety_and_frames.py` | Geocerca con y sin z, freno anticipado contra los modelos identificados, CommandGate, zona segura, marcos, altura medida, término D e integral del PID |
+| `test_vision.py` | Mapa de ArUco (caras hacia dentro), PnP sintético, ambigüedad de un marcador, filtro de offset, lock |
+| `test_calibracion.py` | Detección ChArUco, calibración con vistas sintéticas, formato del yaml de cámara |
+| `test_frame_pacer.py`, `test_paths.py`, `test_reconstruccion.py` | Video, rutas y selección de frames para COLMAP |
+
+`test_flake8` y `test_pep257` fallan por advertencias de estilo antiguas.
+
+---
+
+## 17. Próximos pasos del proyecto
+
+1. Validar en vuelo real las ganancias actuales con una prueba corta y luego una órbita completa.
+2. Asegurar que el video de la órbita sirve para la reconstrucción: estabilidad, cobertura y frecuencia de cuadros.
+3. Integrar la reconstrucción 3D a partir del video.
+4. Implementar el NBV para detectar zonas faltantes y calcular vistas nuevas.
+5. Extender el trajectory_planner para un segundo vuelo por puntos arbitrarios. `consumo_energ.py` es un primer borrador de trayectoria de mínima energía.
+
+---
+
+## 18. Glosario
+
+| Término | Significado |
+|---|---|
+| Bag | Grabación de tópicos de ROS 2 (`ros2 bag`), en formato `.db3` |
+| Deadman | Botón que hay que sostener para que el sistema acepte comandos |
+| Feedforward | Parte del comando que se calcula de la velocidad deseada, sin esperar a que exista error |
+| FlatTrim | Calibración del Bebop en el piso para que sepa cuál es la horizontal |
+| Flujo óptico | Estimación de velocidad a partir de la cámara inferior que mira al piso |
+| Gaz | Comando de velocidad vertical del Bebop |
+| Geocerca | Límite virtual del área de vuelo |
+| Hover nativo | El autopiloto del Bebop mantiene posición y altura con comando cero |
+| Lookat | Modo en que el frente del dron apunta siempre a un punto |
+| Marco de despegue | Sistema de coordenadas con origen en el despegue y x hacia el frente inicial |
+| NBV | Next Best View: calcular la siguiente vista que más información aporta |
+| PID | Controlador proporcional, integral y derivativo |
+| Pitch, roll, yaw | Inclinación adelante y atrás, inclinación lateral y giro sobre el eje vertical |
+| Setpoint o goal | Posición que el controlador intenta alcanzar |
+| Watchdog | Temporizador que pone el sistema en estado seguro si deja de recibir mensajes |
