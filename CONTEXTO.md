@@ -38,7 +38,7 @@ Computadoras: laptop (Ubuntu 22.04, ROS 2 Humble, Gazebo Fortress) y escritorio 
 | F1 Modelado de la cámara monocular | Cámara del Bebop calibrada (ChArUco, RMS 0.61 px, `bebop/control_bebop/config/bebop2_camera_calib.yaml`); falta validarla con puntos de control. **Falta** la función de incertidumbre por distancia y ángulo de incidencia. |
 | F1 Modelado del consumo energético | Solo un borrador: `bebop/control_bebop/control_bebop/consumo_energ.py` (CasADi, modelo de motores con constantes en 0, no ejecutable). |
 | F1 Problema de optimización (OE1) | No formulado en código. |
-| F2 Arquitectura de simulación | Hecha en **Gazebo** + ROS 2 (Bebop y Matrice), no en Webots como dice la propuesta. Decidir si se queda Gazebo y ajustarlo en el documento. |
+| F2 Arquitectura de simulación | Hecha en **Gazebo** + ROS 2 (Bebop y Matrice). **Decisión (26 oct 2026): se usa Gazebo, no Webots** como decía la propuesta, porque funciona mejor para la simulación y la integración con el hardware físico. Ajustarlo en el documento de tesis. |
 | F2 Primer vuelo genérico | Órbita circular con la cámara al centro (`yaw_mode: lookat`), geocerca, máquina de estados, mando PS5. Volada en real el 23 oct 2026: radio real 0.47 m contra 0.5 m, lock visual 100 %. Video para reconstrucción con `nodo_video`. |
 | Reconstrucción 3D | Pipeline con COLMAP (`bebop/control_bebop/RECONSTRUCCION_3D.md`): nube dispersa y malla; la nube densa requiere COLMAP con CUDA. La propuesta habla de SLAM visual y mapa de ocupación: hoy es SfM fuera de línea. |
 | F2 Segundo vuelo optimizado (NBV) | **No existe.** El trajectory_planner solo hace órbita; hay que extenderlo a puntos arbitrarios. |
