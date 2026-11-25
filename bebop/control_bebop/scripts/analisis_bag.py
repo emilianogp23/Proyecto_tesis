@@ -87,7 +87,8 @@ def load(path, only=None):
             row = (t, p.position.x, p.position.y, p.position.z, _yaw(p.orientation))
         elif name in ('/bebop/cmd_vel', '/bridge/cmd_vel_raw', '/goal_vel'):
             row = (t, m.linear.x, m.linear.y, m.linear.z, m.angular.z)
-        elif name in ('/flight_state', '/bebop/altitude', '/trajectory_stalled', '/vision/lock'):
+        elif name in ('/flight_state', '/bebop/altitude', '/bebop/battery',
+                      '/trajectory_stalled', '/vision/lock'):
             row = (t, float(m.data))
         else:
             continue
@@ -275,6 +276,14 @@ def main():
     else:
         print('  Sin /bebop/altitude: driver sin el parche de altura (patches/)')
     print(f'  z de /bebop1/pose: máx {pose[:, 3].max():.2f} m | final {pose[-1, 3]:+.2f} m')
+
+    print('\n== Batería')
+    if '/bebop/battery' in d:
+        bat = d['/bebop/battery']
+        print(f'  {bat[0, 1]:.0f} % → {bat[-1, 1]:.0f} % (gastó {bat[0, 1] - bat[-1, 1]:.0f} % '
+              f'en {bat[-1, 0] - bat[0, 0]:.0f} s; resolución 1 %)')
+    else:
+        print('  Sin /bebop/battery: driver sin el parche (patches/)')
 
     vision_report(d, pose)
 

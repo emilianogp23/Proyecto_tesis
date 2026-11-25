@@ -78,6 +78,7 @@ Leyenda: 👤 = lo hace Emiliano (vuelos, cosas físicas). 🤖 = se puede pedir
 - **Cómo:** con el dron encendido en el piso y los motores apagados, `ros2 topic list | grep -i batt` para ver el nombre del tópico de batería de `ros2_bebop_driver`. Agregarlo a la lista del `ExecuteProcess` de `ros2 bag record`. Si el driver da voltaje además del porcentaje, grabar los dos.
 - **Listo cuando:** un bag de 1 minuto con el dron en el piso tiene mensajes de batería (`ros2 bag info`).
 - **Nota:** el Bebop reporta el porcentaje en enteros. Con ~30 Wh, 1 % ≈ 0.3 Wh. Por eso los vuelos de comprobación se repiten.
+- **Hecho el 25 nov, probado con el dron en el piso:** `ros2_bebop_driver` no publicaba la batería. Se agregó al parche (`bebop/patches/ros2_bebop_driver_altitude.patch`) como `/bebop/battery` (`std_msgs/UInt8`, porcentaje; el Bebop 2 no da voltaje). Ya está en el `ros2 bag record` de `bebop/control_bebop/launch/real_flight.launch.py`, y `bebop/control_bebop/scripts/analisis_bag.py` reporta el % inicial, el final y el gastado. Driver y control_bebop compilados en el escritorio. En la laptop hay que aplicar el parche nuevo.
 
 ### Paso 3 — Crear `optimizador/` y `parametros.py` 🤖 (semana del 25 nov)
 
@@ -324,7 +325,7 @@ Cuando se fije un valor, ponerlo en `parametros.py` con un comentario de dónde 
 ## Registro de avance
 
 - [ ] Paso 1 — Trabajo local subido a GitHub
-- [ ] Paso 2 — Batería en los bags
+- [x] Paso 2 — Batería en los bags (25 nov: `/bebop/battery` probado con el dron en el piso)
 - [ ] Paso 3 — `optimizador/` y `parametros.py`
 - [ ] Paso 4 — `energia.py`
 - [ ] Paso 5 — Corral preparado (+ primer n_reg)

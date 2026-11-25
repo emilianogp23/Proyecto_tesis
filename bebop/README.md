@@ -11,7 +11,7 @@ Vuelo autónomo de un Parrot Bebop 2 con ROS 2 para reconstrucción 3D de objeto
 - `control_bebop/`: paquete principal con el control de vuelo, la trayectoria, el video y las herramientas.
 - `bebop_ros/`: simulación en Gazebo, copia de juliordzcer/bebop_ros.
 - `patches/`: parche al driver `ros2_bebop_driver` (altura medida, techo de firmware, calibración de cámara).
-- `control_bebop/Bags_respaldo/`: bags de los vuelos reales del 16 y 23 oct 2026 (los videos `.avi` de esos vuelos siguen en Vuelo_bebop_v1).
+- `control_bebop/Bags_respaldo/`: bags de los vuelos reales del 16, 23 y 30 oct 2026 (los videos `.avi` de esos vuelos siguen en Vuelo_bebop_v1).
 
 ## Entornos
 
