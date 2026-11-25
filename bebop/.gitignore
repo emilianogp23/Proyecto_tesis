@@ -1,7 +1,10 @@
 # Datos generados por control_bebop (se guardan localmente, no se suben)
 control_bebop/bags/
 control_bebop/videos/
-control_bebop/reconstrucciones/
+control_bebop/reconstrucciones/*
+!control_bebop/reconstrucciones/*/
+control_bebop/reconstrucciones/*/*
+!control_bebop/reconstrucciones/*/resumen.json
 control_bebop/trayectorias/
 control_bebop/.pytest_cache/
 

@@ -1,8 +1,8 @@
 diff --git a/include/ros2_bebop_driver/ardrone3_state_callbacks.hpp b/include/ros2_bebop_driver/ardrone3_state_callbacks.hpp
-index 51d0738..ecca8c5 100644
+index 51d0738..1dfabdb 100644
 --- a/include/ros2_bebop_driver/ardrone3_state_callbacks.hpp
 +++ b/include/ros2_bebop_driver/ardrone3_state_callbacks.hpp
-@@ -70,4 +70,31 @@ class Ardrone3PilotingStateSpeedChanged {
+@@ -70,4 +70,44 @@ class Ardrone3PilotingStateSpeedChanged {
      std::tuple<std::string, time_point, float, float, float> get(void) const;
  };
  
@@ -33,12 +33,25 @@ index 51d0738..ecca8c5 100644
 +    std::tuple<bool, float, float, float> get(void) const;
 +};
 +
++class CommonStateBatteryStateChanged {
++   private:
++    ARCONTROLLER_DICTIONARY_ARG_t* arg;
++    mutable std::mutex mutex;
++    uint8_t percent = 0;
++    bool received = false;
++
++   public:
++    void set(const ARCONTROLLER_DICTIONARY_ARG_t* arguments);
++    // (received, percent)
++    std::tuple<bool, uint8_t> get(void) const;
++};
++
  }  // namespace bebop_driver
 diff --git a/include/ros2_bebop_driver/bebop.hpp b/include/ros2_bebop_driver/bebop.hpp
-index 4bfe370..43bb82b 100644
+index 4bfe370..daa286c 100644
 --- a/include/ros2_bebop_driver/bebop.hpp
 +++ b/include/ros2_bebop_driver/bebop.hpp
-@@ -92,6 +92,10 @@ class Bebop {
+@@ -92,6 +92,11 @@ class Bebop {
      Ardrone3PilotingStateAttitudeChanged
  	ardrone3_piloting_state_attitude_changed;
      Ardrone3PilotingStateSpeedChanged ardrone3_piloting_state_speed_changed;
@@ -46,10 +59,11 @@ index 4bfe370..43bb82b 100644
 +	ardrone3_piloting_state_altitude_changed;
 +    Ardrone3PilotingSettingsStateMaxAltitudeChanged
 +	ardrone3_piloting_settings_state_max_altitude_changed;
++    CommonStateBatteryStateChanged common_state_battery_state_changed;
  
     public:
      Bebop();
-@@ -109,6 +113,7 @@ class Bebop {
+@@ -109,6 +114,7 @@ class Bebop {
      void move(double roll, double pitch, double gaz_speed, double yaw_speed);
      void moveCamera(double titl, double pan);
      void photo(bool on);
@@ -57,7 +71,7 @@ index 4bfe370..43bb82b 100644
  
      void startStreaming(void);
      void stopStreaming(void);
-@@ -124,6 +129,14 @@ class Bebop {
+@@ -124,6 +130,18 @@ class Bebop {
      auto getArdrone3PilotingStateSpeed() const {
  	return ardrone3_piloting_state_speed_changed.get();
      };
@@ -69,11 +83,15 @@ index 4bfe370..43bb82b 100644
 +    auto getArdrone3PilotingSettingsStateMaxAltitude() const {
 +	return ardrone3_piloting_settings_state_max_altitude_changed.get();
 +    };
++    /* std::tuple<bool, uint8_t> */
++    auto getCommonStateBattery() const {
++	return common_state_battery_state_changed.get();
++    };
  
      void throwOnInternalError(const std::string& message);
      void throwOnCtrlError(const eARCONTROLLER_ERROR& error,
 diff --git a/include/ros2_bebop_driver/bebop_driver_node.hpp b/include/ros2_bebop_driver/bebop_driver_node.hpp
-index 11252f4..b8f66f5 100644
+index 11252f4..e2f71ea 100644
 --- a/include/ros2_bebop_driver/bebop_driver_node.hpp
 +++ b/include/ros2_bebop_driver/bebop_driver_node.hpp
 @@ -41,6 +41,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
@@ -84,12 +102,13 @@ index 11252f4..b8f66f5 100644
  #include <std_msgs/msg/u_int8.hpp>
  
  #include "ros2_bebop_driver/bebop.hpp"
-@@ -75,6 +76,10 @@ class BebopDriverNode : public rclcpp::Node {
+@@ -75,6 +76,11 @@ class BebopDriverNode : public rclcpp::Node {
      std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster;
      rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr publisher_odometry;
      rclcpp::TimerBase::SharedPtr odom_timer;
 +    // Altitude above takeoff reported by the Bebop (sonar + barometer)
 +    rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr publisher_altitude;
++    rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr publisher_battery;
 +    double max_altitude;
 +    bool max_altitude_logged = false;
  
@@ -126,10 +145,10 @@ index 2aa43f5..ccecd67 100644
  	</node>
  </launch>
 diff --git a/src/ardrone3_state_callbacks.cpp b/src/ardrone3_state_callbacks.cpp
-index e9104e4..15634f4 100644
+index e9104e4..86f2508 100644
 --- a/src/ardrone3_state_callbacks.cpp
 +++ b/src/ardrone3_state_callbacks.cpp
-@@ -115,4 +115,64 @@ Ardrone3PilotingStateSpeedChanged ::get(void) const {
+@@ -115,4 +115,84 @@ Ardrone3PilotingStateSpeedChanged ::get(void) const {
      return std::tuple_cat(std::make_tuple(frame_id, time),
  			  speedx_speedy_speedz);
  }
@@ -193,9 +212,29 @@ index e9104e4..15634f4 100644
 +    std::unique_lock<std::mutex> lock(mutex);
 +    return std::tuple_cat(std::make_tuple(received), current_min_max);
 +}
++
++void CommonStateBatteryStateChanged::set(
++    const ARCONTROLLER_DICTIONARY_ARG_t *arguments) {
++    std::unique_lock<std::mutex> lock(mutex);
++
++    arg = NULL;
++    HASH_FIND_STR(
++	arguments,
++	ARCONTROLLER_DICTIONARY_KEY_COMMON_COMMONSTATE_BATTERYSTATECHANGED_PERCENT,
++	arg);
++    if (arg) {
++	percent = arg->value.U8;
++	received = true;
++    }
++}
++
++std::tuple<bool, uint8_t> CommonStateBatteryStateChanged::get(void) const {
++    std::unique_lock<std::mutex> lock(mutex);
++    return std::make_tuple(received, percent);
++}
  }  // namespace bebop_driver
 diff --git a/src/bebop.cpp b/src/bebop.cpp
-index d7d6a1a..86d0a16 100644
+index d7d6a1a..88efbd8 100644
 --- a/src/bebop.cpp
 +++ b/src/bebop.cpp
 @@ -157,6 +157,14 @@ void Bebop::flatTrim(void) {
@@ -213,7 +252,7 @@ index d7d6a1a..86d0a16 100644
  void Bebop::navigateHome(bool start_stop) {
      throwOnInternalError("Navigate home failed");
      throwOnCtrlError(deviceController->aRDrone3->sendPilotingNavigateHome(
-@@ -327,6 +335,14 @@ void commandReceivedCallback(
+@@ -327,6 +335,18 @@ void commandReceivedCallback(
  	    bebop->ardrone3_piloting_state_attitude_changed.set(
  		element_dict_ptr->arguments);
  	    break;
@@ -225,11 +264,15 @@ index d7d6a1a..86d0a16 100644
 +	    bebop->ardrone3_piloting_settings_state_max_altitude_changed.set(
 +		element_dict_ptr->arguments);
 +	    break;
++	case ARCONTROLLER_DICTIONARY_KEY_COMMON_COMMONSTATE_BATTERYSTATECHANGED:
++	    bebop->common_state_battery_state_changed.set(
++		element_dict_ptr->arguments);
++	    break;
  	default:
  	    break;
      }
 diff --git a/src/bebop_driver_node.cpp b/src/bebop_driver_node.cpp
-index 201235d..3f00997 100644
+index 201235d..0255878 100644
 --- a/src/bebop_driver_node.cpp
 +++ b/src/bebop_driver_node.cpp
 @@ -67,6 +67,14 @@ BebopDriverNode::BebopDriverNode()
@@ -260,16 +303,18 @@ index 201235d..3f00997 100644
      // The core functions subscribers
      // For: TakeOff, Land, Emergency, flatTrim, navigateHome, animationFlip,
  
-@@ -147,6 +161,8 @@ BebopDriverNode::BebopDriverNode()
+@@ -147,6 +161,10 @@ BebopDriverNode::BebopDriverNode()
      // Odometry: published at 15Hz
      publisher_odometry =
  	this->create_publisher<nav_msgs::msg::Odometry>("odom", 10);
 +    publisher_altitude =
 +	this->create_publisher<std_msgs::msg::Float64>("altitude", 10);
++    publisher_battery =
++	this->create_publisher<std_msgs::msg::UInt8>("battery", 10);
      odom_timer = this->create_wall_timer(
  	66ms, std::bind(&BebopDriverNode::publishOdometry, this));
  }
-@@ -261,6 +277,27 @@ void BebopDriverNode::publishOdometry(void) {
+@@ -261,6 +279,35 @@ void BebopDriverNode::publishOdometry(void) {
  
      publisher_odometry->publish(odom_message);
      last_odom_time = now;
@@ -282,6 +327,14 @@ index 201235d..3f00997 100644
 +	auto altitude_message = std_msgs::msg::Float64();
 +	altitude_message.data = altitude;
 +	publisher_altitude->publish(altitude_message);
++    }
++
++    // The Bebop only sends the battery percent when it changes, so repeat the last one
++    auto [battery_received, battery_percent] = bebop->getCommonStateBattery();
++    if (battery_received) {
++	auto battery_message = std_msgs::msg::UInt8();
++	battery_message.data = battery_percent;
++	publisher_battery->publish(battery_message);
 +    }
 +
 +    if (!max_altitude_logged) {

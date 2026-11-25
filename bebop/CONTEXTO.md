@@ -1,9 +1,11 @@
 # Contexto de la sección Bebop (antes Vuelo_bebop_v1)
 
-Última actualización: 22 oct 2026. Resumen de [DOCUMENTACION.md](DOCUMENTACION.md) más el estado actual. Detalle de pruebas y localización: [GUIA_PRUEBAS_Y_LOCALIZACION.md](GUIA_PRUEBAS_Y_LOCALIZACION.md); real contra simulación: [ARQUITECTURA_VUELO.md](ARQUITECTURA_VUELO.md).
+Última actualización: 25 nov 2026. Resumen de [DOCUMENTACION.md](DOCUMENTACION.md) más el estado actual. Detalle de pruebas y localización: [GUIA_PRUEBAS_Y_LOCALIZACION.md](GUIA_PRUEBAS_Y_LOCALIZACION.md); real contra simulación: [ARQUITECTURA_VUELO.md](ARQUITECTURA_VUELO.md).
 
 ## 1. Qué es
 Sistema ROS 2 para volar un Parrot Bebop 2 en órbita circular alrededor de un objeto, con la cámara al centro, y grabar video para reconstruirlo en 3D. Fases: (1) vuelo y video, (2) reconstrucción, (3) NBV (Next Best View), (4) segundo vuelo optimizado. Existen la fase 1 y un primer pipeline de la fase 2 con COLMAP (`scripts/reconstruccion_3d.py`, salidas en `control_bebop/reconstrucciones/`). NBV no existe todavía.
+
+Es la tesis de maestría (Universidad de Guanajuato): un optimizador multiobjetivo (energía, precisión, completitud; 11 restricciones; NSGA-II, MOEA/D y MOPSO con jMetalPy) que planea el segundo vuelo solo hacia los huecos del primer modelo. Plataformas: Bebop 2 real y Matrice 100 en Gazebo. **La guía para implementarla es [../PLAN_IMPLEMENTACION.md](../PLAN_IMPLEMENTACION.md)** (18 pasos con su «Listo cuando» y el registro de avance); las reglas de trabajo están en [../CLAUDE.md](../CLAUDE.md). El optimizador va en `../optimizador/`, en Python sin ROS, y el modelo de energía será `optimizador/energia.py`.
 
 Usuario: estudiante/investigador, trabaja en español, en un laboratorio con un corral de vallas de ~5 × 5 m y dos robots en el piso. Dos computadoras:
 - Laptop: Ubuntu 22.04, ROS 2 Humble, Gazebo Fortress, `sim_flight_humble.launch.py`.
@@ -14,9 +16,9 @@ Repositorio git: desde el 26 oct 2026 este código vive en `Proyecto_tesis/bebop
 ## 2. Estructura
 - `control_bebop/`: paquete principal (ament_python). Nodos en `control_bebop/`, launches, `config/`, `scripts/`, `test/`, `resource/meshes/` (texturas y modelos de Gazebo).
 - `bebop_ros/`: simulación (copia de juliordzcer/bebop_ros). Solo se usan `bebop_gz` (mundo `bebop1.sdf`, modelo, plugins) y `bebop_demo` (`set_pose`).
-- `patches/`: parche al driver (altura medida, techo de firmware, calibración de cámara).
+- `patches/`: parche al driver (altura medida, batería `/bebop/battery`, techo de firmware, calibración de cámara).
 - Externos en `~/ros2_ws/src`, fuera del repo: `ros2_bebop_driver` (jeremyfix, alfa; con el parche aplicado en el escritorio) y `ros2_parrot_arsdk`. También hay paquetes ajenos al proyecto: `drone_gazebo`, `my_robot_project`, `VeranoUG2026-Optimizador_Trayectoria`.
-- `drone_gazebo` (Matrice 100, ignorado por git): `matrice_flight.launch.py` (23 oct) usa los nodos de control_bebop sin copiarlos; `config/matrice.yaml` escala la órbita (r 20 m, 6 m de altura, alrededor de la estación de bomberos) y la geocerca (±35 m). Si cambian los nombres de tópicos o parámetros de control_bebop, revisar ese launch. RETURN_HOME y RECOVERY rodean el edificio (`no_fly_boxes` de flight_manager, `route_around` en `safety.py`; vacío por defecto, el Bebop no cambia) y tras L1 aterriza exactamente sobre home. La plataforma quedó en el piso (z del mundo −0.472) y el dron centrado en su placa (1.92, −10).
+- `drone_gazebo` (Matrice 100, en `main` desde el 4 nov; git ignora solo sus `.blend`): `matrice_flight.launch.py` (23 oct) usa los nodos de control_bebop sin copiarlos; `config/matrice.yaml` escala la órbita (r 20 m, 6 m de altura, alrededor de la estación de bomberos) y la geocerca (±35 m). Si cambian los nombres de tópicos o parámetros de control_bebop, revisar ese launch. RETURN_HOME y RECOVERY rodean el edificio (`no_fly_boxes` de flight_manager, `route_around` en `safety.py`; vacío por defecto, el Bebop no cambia) y tras L1 aterriza exactamente sobre home. La plataforma quedó en el piso (z del mundo −0.472) y el dron centrado en su placa (1.92, −10).
 
 ## 3. Arquitectura
 joy_node → joystick_interface → flight_manager (máquina de estados, único que publica `/flight_state`) → trajectory_planner (`/goal`, `/goal_vel`) → control_PID (10 Hz).
@@ -65,7 +67,7 @@ Dinámica del Bebop real: pitch/roll es inclinación (≈ aceleración), retardo
 - 23 oct 16:36 (`..._163618`, vuelo libre en manual): volando rápido la odometría erró ~1 m en 3 m y el filtro rechazó las mediciones buenas (p90 94 cm contra el video). Arreglo: `vision_q_move` 0.02 (incertidumbre por metro recorrido, en `vision.py`) y `vision_offset_rate_xy` 0.25. Reproducido offline con los tres bags del día contra los videos: libre p90 46 cm y 1 rechazo; las órbitas igual (11 cm).
 
 ## 7. Problemas abiertos
-- Validados en vuelo real (23 oct): parche de altura, fusión visual en modo sombra, `lookat`. Desde entonces `real_drone.yaml` trae `vision_shadow: false` (visión al mando, también en simulación); falta volarlo (vuelos 3 y 4 de la guía).
+- Validados en vuelo real (23 oct): parche de altura, fusión visual en modo sombra, `lookat`. `real_drone.yaml` trae `vision_shadow: false` (visión al mando en simulación), pero desde el 27 oct `real_flight.launch.py` lo fuerza con el argumento `correccion` (por defecto `false` = modo sombra, para volar libre sin marcadores; `correccion:=true` = visión al mando). Falta volarlo (vuelos 3 y 4 de la guía).
 - Medir los ArUco del piso.
 - Altura de la órbita: con la cámara a −28° el bote (0.70–0.95 m) se encuadra a ~1.05–1.1 m, no a 1.5 m.
 - Con `yaw_mode: fixed` y la visión al mando, en Gazebo hay ~15 s sin marcadores cerca de x = 1.5 → se pierde el lock → HOVER. Con `lookat` completa.
@@ -75,11 +77,14 @@ Dinámica del Bebop real: pitch/roll es inclinación (≈ aceleración), retardo
 - Magnetómetro en interiores degrada el yaw (la visión lo corrige solo con lock).
 - `control_camara` y `muestra_odometria_gui` usan la cruceta, igual que el mando en MANUAL; no lanzar con el vuelo.
 - `control_panel` simula el deadman siempre presionado: solo simulación.
-- `consumo_energ.py` es borrador inservible; `control_vuelo.py` está vacío.
+- `consumo_energ.py` (modelo de motores) ya no se usa: lo reemplaza `optimizador/energia.py` (paso 4 del plan). `control_vuelo.py` está vacío.
+- Batería (25 nov): el driver no la publicaba; ahora el parche publica `/bebop/battery` (`UInt8`, %, repite el último valor porque el Bebop solo avisa cuando cambia), el bag de `real_flight` la graba y `analisis_bag.py` reporta el % gastado. Probado en el escritorio con el dron en el piso (paso 2 del plan cerrado); falta aplicar el parche en la laptop. Resolución de 1 % (~0.3 Wh): sirve para calibrar `eta` y `P_av` con vuelos completos, no para medir una maniobra.
 - Revisar que no quede un `ros2 bag record` colgado tras cerrar un launch (`pgrep -fa "ros2 bag"`).
 
 ## 8. Siguiente paso
-Vuelo 3 de la guía (hover con la visión al mando; `real_drone.yaml` ya lo trae) y luego vuelo 4 (órbita en `lookat`). Antes de despegar, `ros2 topic hz /bebop/odom` (el intento de las 15:45 del 23 oct no tenía odometría). Ponerle textura a la caja para la reconstrucción. Tras cada vuelo: `python3 control_bebop/scripts/analisis_bag.py <bag>`.
+Seguir el registro de avance de `../PLAN_IMPLEMENTACION.md`. Lo inmediato: los pasos 3 y 4 (`optimizador/parametros.py`, `energia.py`).
+
+Pendiente del vuelo: vuelo 3 de la guía (hover con la visión al mando: `real_flight.launch.py correccion:=true`) y luego vuelo 4 (órbita en `lookat`). Antes de despegar, `ros2 topic hz /bebop/odom` (el intento de las 15:45 del 23 oct no tenía odometría). Ponerle textura a la caja para la reconstrucción. Tras cada vuelo: `python3 control_bebop/scripts/analisis_bag.py <bag>`.
 
 ## 9. Comandos útiles
 ```bash
@@ -92,6 +97,9 @@ ros2 launch control_bebop preview_trajectory.launch.py    # sin dron ni Gazebo
 ros2 run control_bebop calibrar_camara --ros-args -p square_length:=<medido>
 python3 control_bebop/scripts/analisis_bag.py control_bebop/bags/vuelo_real_<fecha>
 python3 control_bebop/scripts/replay_3d.py <bag>
+# Nube densa con CUDA: el colmap de apt no tiene CUDA; pycolmap-cuda12 4.2.1 está en ~/colmap_cuda_env.
+# Tras reconstruccion_3d.py (deja dense/ sin distorsión), en ese venv:
+#   pycolmap.patch_match_stereo('<rec>/dense'); pycolmap.stereo_fusion('<rec>/dense.ply', '<rec>/dense', output_type='ply')
 cd control_bebop && python3 -m pytest test/ -q
 ```
 

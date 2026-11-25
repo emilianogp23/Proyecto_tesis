@@ -1,0 +1,12 @@
+{
+  "n_images": 114,
+  "n_registered": 114,
+  "n_points": 5301,
+  "n_models": 1,
+  "sparse_model": "/home/emiliano/ros2_ws/src/control_bebop/reconstrucciones/vuelo_20261023_154631/sparse/0",
+  "sparse_txt": "/home/emiliano/ros2_ws/src/control_bebop/reconstrucciones/vuelo_20261023_154631/sparse_txt/0",
+  "sparse_ply": "/home/emiliano/ros2_ws/src/control_bebop/reconstrucciones/vuelo_20261023_154631/sparse.ply",
+  "mesh_sparse": "/home/emiliano/ros2_ws/src/control_bebop/reconstrucciones/vuelo_20261023_154631/mesh_sparse_poisson.ply",
+  "entrada": "/home/emiliano/ros2_ws/src/control_bebop/Bags_respaldo/videos_respaldo/vuelo_20261023_154631.avi",
+  "segundos": 23.1
+}

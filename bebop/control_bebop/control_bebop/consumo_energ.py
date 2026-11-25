@@ -3,18 +3,18 @@ import math as mt
 import casadi as ca 
 
 
-Kv= 980 #KV  constante de velocidad del motor
-Kt=1/Kv #constante d torque
-tf=0.0 #torque de friccion
-R=0.0 #resistencia del embobinado 
-Ke=0.0 #constante de voltaje del motor 
-Df = 0.0 #friccion viscosa
-kappa_tau = 0.0 #coeficiente de arrastre aerodinamico
-J=0.0 #inercia del rotor 
+Kv= 980 #KV [rpm/V], sin fuente: Parrot no lo publica; con 3S (11.1 V) y 12000 rpm en vuelo debe ser > 1080, medirlo
+Kt=60/(2*np.pi*Kv) #constante de torque [N·m/A]; Kv va en rpm/V, por eso no es 1/Kv
+tf=0.0 #torque de friccion [N·m], medir (corriente sin hélice)
+R=0.0 #resistencia del embobinado [ohm], medir entre fases / 2
+Ke=Kt #constante de voltaje [V·s/rad], igual a Kt en SI
+Df = 0.0 #friccion viscosa [N·m·s/rad], medir (corriente sin hélice)
+kappa_tau = 1.9e-8 #arrastre aerodinamico [N·m·s²], sigma*kappa = 0.01 m * 1.9e-6 (Sun et al. 2020, Bebop 2)
+J=8.0e-6 #inercia del rotor [kg·m²] (Sun et al. 2020, Bebop 2)
 
-m=0.0 #masa del dron
+m=0.503 #masa del dron [kg] (modelo Gazebo; Sun et al. usan 0.41 sin cámara y con batería ligera)
 g=9.81 #aceleracion de la gravedad
-L=0.0 #distancia del centro de masa al motor
+L=0.145 #distancia del centro de masa al motor [m] (Sun et al. 2020; el SDF da 0.146)
 
 
  

@@ -1,6 +1,6 @@
 # Contexto de la tesis (para futuros chats)
 
-Última actualización: 26 oct 2026. Este archivo resume la tesis completa y dónde está cada cosa. El detalle técnico de cada plataforma está en su carpeta: [bebop/CONTEXTO.md](bebop/CONTEXTO.md) (estado al día del Bebop) y [matrice100/README.md](matrice100/README.md).
+Última actualización: 26 oct 2026 (plan del optimizador: 25 nov 2026). Este archivo resume la tesis completa y dónde está cada cosa. **El plan de implementación del optimizador, paso a paso, está en [PLAN_IMPLEMENTACION.md](PLAN_IMPLEMENTACION.md)**; las reglas para Claude Code, en [CLAUDE.md](CLAUDE.md). El detalle técnico de cada plataforma está en su carpeta: [bebop/CONTEXTO.md](bebop/CONTEXTO.md) (estado al día del Bebop) y [matrice100/README.md](matrice100/README.md).
 
 ## 1. La tesis
 
